@@ -7,6 +7,9 @@
 #include "../include/ddriver.h"
 #include <linux/fs.h>
 #include <pwd.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define DEMO_DEFAULT_PERM        0777
 
@@ -42,11 +45,25 @@ static int demo_mount(struct fuse_conn_info * conn_info){
 
 
     /* 填充super信息 */
-    super.sz_io = /* TODO */;
-    super.sz_disk = /* TODO */;
-    super.sz_blks = /* TODO */; 
+    int ret;
+    if (ddriver_ioctl(super.driver_fd, IOC_REQ_DEVICE_IO_SZ, &ret) != 0 || ret <= 0)
+        goto error_sz_io;
+    super.sz_io = ret;
+
+    if (ddriver_ioctl(super.driver_fd, IOC_REQ_DEVICE_SIZE, &ret) != 0)
+        goto error_sz_disk;
+    super.sz_disk = ret;
+
+    super.sz_blks = super.sz_disk / super.sz_io; 
 
     return 0;
+
+error_sz_disk:
+    printf("Error after fetching `super.sz_disk`.\n");
+    super.sz_io = 0;
+error_sz_io:
+    printf("Error after fetching `super.sz_io`.\n");
+    return -EIO;
 }
 
 /* 卸载文件系统 */
@@ -65,15 +82,47 @@ static int demo_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off
     /* 根据超级块的信息，从第500逻辑块读取一个dentry，ls将只固定显示这个文件名 */
 
     /* TODO: 计算磁盘偏移off，并根据磁盘偏移off调用ddriver_seek移动磁盘头到磁盘偏移off处 */
-
+    off_t off = 500 * 2 * super.sz_io;
+    printf("off=%llu, super.sz_io=%d, super.sz_disk=%d\n", off, super.sz_io, super.sz_disk);
+    if (off >= super.sz_disk)
+        goto error_off;
+    if (ddriver_seek(super.driver_fd, off, SEEK_SET) != off)
+        goto error_seek;
     /* TODO: 调用ddriver_read读出一个磁盘块到内存，512B */
-
+    char *block_buf = malloc(super.sz_io);
+    if (block_buf == NULL)
+        goto error_malloc_block_buf;
+    if (ddriver_read(super.driver_fd, block_buf, super.sz_io) != super.sz_io) 
+        goto error_read;
     /* TODO: 使用memcpy拷贝上述512B的前sizeof(demo_dentry)字节构建一个demo_dentry结构 */
-
+    if (sizeof(struct demo_dentry) > super.sz_io)
+        goto error_dentry_size;
+    struct demo_dentry *dentry = malloc(sizeof(struct demo_dentry));
+    if (dentry == NULL)
+        goto error_malloc_dentry;
+    memcpy((void *)dentry, (const void *)block_buf, sizeof(struct demo_dentry));
     /* TODO: 填充filename */
+    memcpy((void *)filename, (const void *)&dentry->fname, 128);
 
+    free(dentry);
+    free(block_buf);
     // 此处大家先不关注filler，已经帮同学写好，同学填充好filename即可
     return filler(buf, filename, NULL, 0);
+
+error_malloc_dentry:
+    printf("Error after malloc `dentry`.\n");
+error_dentry_size:
+    printf("Error after comparing `sizeof(struct demo_dentry) > super.sz_io`.\n");
+error_read:
+    printf("Error after comparing `ddriver_read(...) == super.sz_io`.\n");
+    free(block_buf);
+error_malloc_block_buf:
+    printf("Error after malloc `block_buf`.\n");
+error_seek:
+    printf("Error after comparing `ddriver_seek(...) == off`.\n");
+error_off:
+    printf("Error after comparing `off >= super.sz_disk`.\n");
+    return -ENXIO;
 }
 
 /* 显示文件属性 */
@@ -82,7 +131,7 @@ static int demo_getattr(const char* path, struct stat *stbuf)
     if(strcmp(path, "/") == 0)
         stbuf->st_mode = DEMO_DEFAULT_PERM | S_IFDIR;            // 根目录是目录文件
     else
-        stbuf->st_mode = /* TODO: 显示为普通文件 */;            // 该文件显示为普通文件
+        stbuf->st_mode = DEMO_DEFAULT_PERM | S_IFREG; /* TODO: 显示为普通文件 */ // 该文件显示为普通文件
     return 0;
 }
 
