@@ -34,8 +34,8 @@ static struct fuse_operations operations = {
     .unlink = NULL,
     .rmdir = NULL,
     .rename = NULL,
-    .open = fs001_open,
-    .opendir = fs001_opendir,
+    .open = NULL,
+    .opendir = NULL,
     .access = NULL,
 };
 
