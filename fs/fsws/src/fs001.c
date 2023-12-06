@@ -21,31 +21,29 @@
 #pragma region "宏定义"
 #define FS001_MAGIC 0x01919810
 #define FS001_SZ_BLK 1024
-#define FS001_MAX_NAME_LEN 128
+#define FS001_MAX_NAME_LEN 32
 #define FS001_DATA_PER_INODE 6
 #define FS001_DEFAULT_PERM 0777
 
 #define FS001_ROOT_INO 0
 
-#define FS001_MAX_INO 1024
+#define FS001_MAX_INO 128
 #define FS001_MAX_DNO 2048
 
 #define FS001_SUPER_OFF (0 * FS001_SZ_BLK)
 #define FS001_BITMAP_INODE_OFF (1 * FS001_SZ_BLK)
 #define FS001_BITMAP_DATA_OFF (2 * FS001_SZ_BLK)
-#define FS001_INODE_OFF(no) (FS001_BITMAP_DATA_OFF + (no) * sizeof(struct fs001_inode))
-#define FS001_DATA_OFF(no) ((fs001_super.blk_disk - 1 - (no)) * FS001_SZ_BLK) // DNO start from 1
+#define FS001_INODE_OFF(no) (3 * FS001_SZ_BLK + (no) * sizeof(struct fs001_inode))
+#define FS001_DATA_OFF(no) ((10 - 1 + (no)) * FS001_SZ_BLK) // DNO start from 1
 #pragma endregion
 
+#pragma region "结构体"
 enum fs001_file_type
 {
     FS001_FILE,
     FS001_DIR,
 };
-
-#define FS001_IS_DIR(pinode) (pinode->dentry->d.type == FS001_DIR)
-#define FS001_IS_REG(pinode) (pinode->dentry->d.type == FS001_FILE)
-
+typedef uint16_t fs001_file_type_t;
 struct fs001_super
 {
     struct driver *driver;
@@ -62,7 +60,6 @@ struct fs001_super
         uint32_t magic;
     } d;
 };
-
 struct fs001_inode
 {
     struct fs001_dentry *dentry;
@@ -73,11 +70,10 @@ struct fs001_inode
     {
         uint16_t ino;
         uint16_t size;
-        enum fs001_file_type type;
+        fs001_file_type_t type;
         uint16_t dno[FS001_DATA_PER_INODE];
     } d;
 };
-
 struct fs001_dentry
 {
     struct fs001_dentry *parent;
@@ -87,45 +83,18 @@ struct fs001_dentry
     struct fs001_dentry_d
     {
         uint16_t ino;
-        enum fs001_file_type type;
+        fs001_file_type_t type;
         char name[FS001_MAX_NAME_LEN];
     } d;
 };
+#pragma endregion
 
+#pragma region "全局变量"
 struct fs001_super fs001_super;
+#pragma endregion
 
-#include "debug.h"
-
-char *fs001_get_fname(const char *path)
-{
-    char ch = '/';
-    char *q = strrchr(path, ch) + 1;
-    return q;
-}
-
-int fs001_calc_lvl(const char *path)
-{
-    // char* path_cpy = (char *)malloc(strlen(path));
-    // strcpy(path_cpy, path);
-    char *str = path;
-    int lvl = 0;
-    if (strcmp(path, "/") == 0)
-    {
-        return lvl;
-    }
-    while (*str != NULL)
-    {
-        if (*str == '/')
-        {
-            lvl++;
-        }
-        str++;
-    }
-    return lvl;
-}
-
-/* DENTRY */
-static struct fs001_dentry *fs001_new_dentry(char *fname, enum fs001_file_type type)
+#pragma region "dentry"
+static struct fs001_dentry *fs001_new_dentry(char *fname, fs001_file_type_t type)
 {
     struct fs001_dentry *dentry = malloc(sizeof(struct fs001_dentry));
     memset(dentry, 0, sizeof(struct fs001_dentry));
@@ -135,15 +104,16 @@ static struct fs001_dentry *fs001_new_dentry(char *fname, enum fs001_file_type t
     dentry->inode = NULL;
     dentry->parent = NULL;
     dentry->next = NULL;
+    return dentry;
 }
-int fs001_append_dentry(struct fs001_inode *inode, struct fs001_dentry *dentry)
+static int fs001_append_dentry(struct fs001_inode *inode, struct fs001_dentry *dentry)
 {
     dentry->next = inode->dentries; // NULLable
     inode->dentries = dentry;
     inode->d.size += sizeof(struct fs001_dentry_d);
     return 0;
 }
-int fs001_drop_dentry(struct fs001_inode *inode, struct fs001_dentry *dentry)
+static int fs001_drop_dentry(struct fs001_inode *inode, struct fs001_dentry *dentry)
 {
     struct fs001_dentry *dentry_cursor = inode->dentries;
     bool is_find = false;
@@ -173,7 +143,7 @@ int fs001_drop_dentry(struct fs001_inode *inode, struct fs001_dentry *dentry)
 error_not_found:
     return -1;
 }
-struct fs001_dentry *fs001_get_dentry(struct fs001_inode *inode, int dir)
+static struct fs001_dentry *fs001_get_dentry(struct fs001_inode *inode, int dir)
 {
     struct fs001_dentry *dentry_cursor = inode->dentries;
     while (dentry_cursor != NULL)
@@ -184,9 +154,10 @@ struct fs001_dentry *fs001_get_dentry(struct fs001_inode *inode, int dir)
     }
     return NULL;
 }
+#pragma endregion
 
-/* DATA */
-uint16_t fs001_alloc_data(void)
+#pragma region "data"
+static uint16_t fs001_alloc_data(void)
 {
     uint16_t dno;
     for (dno = 1; dno < FS001_MAX_DNO; dno++)
@@ -196,19 +167,19 @@ uint16_t fs001_alloc_data(void)
         fs001_super.bitmap_data[dno / 8] |= 1 << (dno % 8); // set used
         break;
     }
-    if (dno == FS001_MAX_DNO)
+    if (dno >= FS001_MAX_DNO)
         goto error_bitmap;
     return dno;
 
 error_bitmap:
     return 0;
 }
-void fs001_free_data(uint16_t dno)
+static void fs001_free_data(uint16_t dno)
 {
     if (dno != 0)
         fs001_super.bitmap_data[dno / 8] &= ~(1 << (dno % 8));
 }
-int fs001_write_data(struct fs001_inode *inode)
+static int fs001_write_data(struct fs001_inode *inode)
 {
     uint16_t size = inode->d.size;
     if (size > FS001_DATA_PER_INODE * FS001_SZ_BLK)
@@ -220,19 +191,23 @@ int fs001_write_data(struct fs001_inode *inode)
             if ((inode->d.dno[i] = fs001_alloc_data()) == 0)
                 goto error_alloc_data;
         int write_size = FS001_SZ_BLK > size ? size : FS001_SZ_BLK;
-        driver_write(fs001_super.driver, inode->data, FS001_DATA_OFF(inode->d.dno[i]), write_size);
+        driver_write(fs001_super.driver, (char *)inode->data, FS001_DATA_OFF(inode->d.dno[i]), write_size);
         size -= write_size;
         i++;
     }
     while (i < FS001_DATA_PER_INODE)
+    {
         fs001_free_data(inode->d.dno[i]);
+        inode->d.dno[i] = 0;
+        i++;
+    }
     return 0;
 
 error_alloc_data:
 error_size_too_big:
     return -1;
 }
-int fs001_read_data(struct fs001_inode *inode)
+static int fs001_read_data(struct fs001_inode *inode)
 {
     uint16_t size = inode->d.size;
     if (size > FS001_DATA_PER_INODE * FS001_SZ_BLK)
@@ -250,7 +225,11 @@ int fs001_read_data(struct fs001_inode *inode)
         i++;
     }
     while (i < FS001_DATA_PER_INODE)
+    {
         fs001_free_data(inode->d.dno[i]);
+        inode->d.dno[i] = 0;
+        i++;
+    }
     return 0;
 
 error_no_data:
@@ -259,22 +238,21 @@ error_malloc:
 error_size_too_big:
     return -1;
 }
+#pragma endregion
 
-/* INODE */
-struct fs001_inode *fs001_alloc_inode(struct fs001_dentry *dentry)
+#pragma region "inode"
+static struct fs001_inode *fs001_alloc_inode(struct fs001_dentry *dentry)
 {
     /* 1) find free ino */
     int ino = 0;
-    bool is_find_free_entry = false;
     for (; ino < sizeof(fs001_super.bitmap_inode) * 8; ino++)
     {
         if (fs001_super.bitmap_inode[ino / 8] & (1 << (ino % 8))) // used
             continue;
-        is_find_free_entry = true;
         fs001_super.bitmap_inode[ino / 8] |= 1 << (ino % 8); // set used
         break;
     }
-    if (!is_find_free_entry || ino == FS001_MAX_INO)
+    if (ino >= FS001_MAX_INO)
         goto error_bitmap;
     /* 2) alloc */
     struct fs001_inode *inode = malloc(sizeof(struct fs001_inode));
@@ -298,7 +276,7 @@ error_malloc:
 error_bitmap:
     return NULL;
 }
-int fs001_free_inode(struct fs001_inode *inode)
+static int fs001_free_inode(struct fs001_inode *inode)
 {
     /* 1) check if is root */
     if (inode == fs001_super.root_dentry->inode)
@@ -329,13 +307,13 @@ int fs001_free_inode(struct fs001_inode *inode)
 error_is_root:
     return -1;
 }
-struct fs001_inode *fs001_read_inode(struct fs001_dentry *dentry, int ino)
+static struct fs001_inode *fs001_read_inode(struct fs001_dentry *dentry, uint16_t ino)
 {
     /* 1) alloc mem space */
     struct fs001_inode *inode = malloc(sizeof(struct fs001_inode));
     if (inode == NULL)
         goto error_malloc;
-    /* 2) read from disk */
+    /* 2) read inode from disk */
     if (driver_read(fs001_super.driver, &inode->d, FS001_INODE_OFF(ino), sizeof(struct fs001_inode_d)) != 0)
         goto error_read;
     inode->data = NULL;
@@ -349,7 +327,7 @@ struct fs001_inode *fs001_read_inode(struct fs001_dentry *dentry, int ino)
     {
         for (int i = 0; i < inode->d.size; i += sizeof(struct fs001_dentry_d))
         {
-            struct fs001_dentry_d *dentry_d = inode->data + i;
+            struct fs001_dentry_d *dentry_d = (struct fs001_dentry_d *)(inode->data + i);
             struct fs001_dentry *sub_dentry = fs001_new_dentry(dentry_d->name, dentry_d->type);
             sub_dentry->parent = inode->dentry;
             sub_dentry->d.ino = dentry_d->ino;
@@ -364,30 +342,24 @@ error_read:
 error_malloc:
     return NULL;
 }
-int fs001_write_inode(struct fs001_inode *inode)
+static int fs001_write_inode(struct fs001_inode *inode)
 {
-    /* 1) write inode itself */
-    if (driver_write(fs001_super.driver, &inode->d, FS001_INODE_OFF(inode->d.ino), sizeof(struct fs001_inode_d)) != 0)
-        goto error_write;
-    /* 2) write data (dir, file, ...) */
-    if (inode->d.type == FS001_DIR)
+    /* 1) write data (dir, file, ...) */
+    if (inode->d.type == FS001_DIR && inode->d.size != 0)
     {
-        if (inode->d.size == 0)
-            return 0;
         if (inode->data != NULL)
             free(inode->data);
-        if (inode->d.size != 0 && (inode->data = malloc(inode->d.size)) == NULL)
+        if ((inode->data = malloc(inode->d.size)) == NULL)
             goto error_malloc;
         struct fs001_dentry *dentry_cursor = inode->dentries;
         int offset = 0;
         while (dentry_cursor != NULL)
         {
             memcpy(inode->data + offset, &dentry_cursor->d, sizeof(struct fs001_dentry_d));
-            offset += sizeof(struct fs001_dentry_d);
-            dentry_cursor = dentry_cursor->next;
-
             if (dentry_cursor->inode != NULL)
                 fs001_write_inode(dentry_cursor->inode);
+            offset += sizeof(struct fs001_dentry_d);
+            dentry_cursor = dentry_cursor->next;
         }
         fs001_write_data(inode);
     }
@@ -396,6 +368,9 @@ int fs001_write_inode(struct fs001_inode *inode)
         if (fs001_write_data(inode) != 0)
             goto error_write_data;
     }
+    /* 2) write inode itself */
+    if (driver_write(fs001_super.driver, (void *)&inode->d, FS001_INODE_OFF(inode->d.ino), sizeof(struct fs001_inode_d)) != 0)
+        goto error_write;
     return 0;
 
 error_malloc:
@@ -403,41 +378,65 @@ error_write_data:
 error_write:
     return -EIO;
 }
+#pragma endregion
 
-struct fs001_dentry *fs001_lookup(const char *path, bool *is_find, bool *is_root)
+#pragma region "工具函数"
+static char *fs001_get_fname(const char *path)
+{
+    char *last_slash = strrchr(path, '/');
+    if (last_slash == NULL)
+        return NULL;
+    char *name = last_slash + 1;
+    if (strlen(name) == 0)
+        return NULL;
+    return name;
+}
+
+static int fs001_calc_level(const char *path)
+{
+    if (strcmp(path, "/") == 0)
+        return 0;
+    int lvl = 0;
+    while (*path != NULL)
+    {
+        if (*path == '/')
+            lvl++;
+        path++;
+    }
+    return lvl;
+}
+
+static struct fs001_dentry *fs001_lookup(const char *path, bool *is_find, bool *is_root)
 {
     struct fs001_dentry *dentry_cursor = fs001_super.root_dentry;
+    int level = fs001_calc_level(path);
     struct fs001_dentry *dentry_ret = NULL;
-    struct fs001_inode *inode;
-    int total_lvl = fs001_calc_lvl(path);
-    int lvl = 0;
     bool is_hit;
-    char *fname = NULL;
-    char *path_cpy = strdup(path);
     *is_root = false;
 
-    if (total_lvl == 0)
+    if (level == 0)
     { /* 根目录 */
         *is_find = true;
         *is_root = true;
-        dentry_ret = fs001_super.root_dentry;
+        return fs001_super.root_dentry;
     }
-    fname = strtok(path_cpy, "/");
+    char *path_cpy = strdup(path);
+    char *fname = strtok(path_cpy, "/");
     while (fname != NULL)
     {
-        lvl++;
-        if (dentry_cursor->inode == NULL) // lazy load
+        level--;
+        if (dentry_cursor->inode == NULL)
             if (fs001_read_inode(dentry_cursor, dentry_cursor->d.ino) == NULL)
                 goto error_read_inode;
 
-        inode = dentry_cursor->inode;
+        struct fs001_inode *inode = dentry_cursor->inode;
 
-        if (FS001_IS_REG(inode) && lvl < total_lvl)
+        if (inode->d.type == FS001_FILE && level != 0)
         {
             dentry_ret = inode->dentry;
             break;
         }
-        if (FS001_IS_DIR(inode))
+        if (inode->d.type == FS001_DIR)
         {
             dentry_cursor = inode->dentries;
             is_hit = false;
@@ -459,7 +458,7 @@ struct fs001_dentry *fs001_lookup(const char *path, bool *is_find, bool *is_root
                 break;
             }
 
-            if (is_hit && lvl == total_lvl)
+            if (is_hit && level == 0)
             {
                 *is_find = true;
                 dentry_ret = dentry_cursor;
@@ -470,28 +469,20 @@ struct fs001_dentry *fs001_lookup(const char *path, bool *is_find, bool *is_root
     }
 
     if (dentry_ret->inode == NULL)
-    {
         dentry_ret->inode = fs001_read_inode(dentry_ret, dentry_ret->d.ino);
-    }
 
     free(path_cpy);
     return dentry_ret;
 
 error_read_inode:
+    free(path_cpy);
     return NULL;
 }
-/******************************************************************************
- * SECTION: 必做函数实现
- *******************************************************************************/
-/**
- * @brief 挂载（mount）文件系统
- *
- * @param conn_info 可忽略，一些建立连接相关的信息
- * @return void*
- */
+#pragma endregion
+
+#pragma region "fs001"
 void *fs001_init(struct fuse_conn_info *conn_info)
 {
-    /* TODO: 在这里进行挂载 */
     /* 1) init driver */
     if ((fs001_super.driver = driver_init((char *)fs001_options.device)) == NULL)
     {
@@ -506,7 +497,7 @@ void *fs001_init(struct fuse_conn_info *conn_info)
     }
     assert(fs001_super.blk_disk >= FS001_MAX_INO + (FS001_MAX_DNO - 1) + 3);
     /* 3) read super block */
-    if (driver_read(fs001_super.driver, (void *)&fs001_super.d, FS001_SUPER_OFF, sizeof(struct fs001_super_d)) != 0)
+    if (driver_read(fs001_super.driver, &fs001_super.d, FS001_SUPER_OFF, sizeof(struct fs001_super_d)) != 0)
     {
         perror("fs001_init: driver_read");
         goto error_driver_read;
@@ -585,15 +576,8 @@ error_driver_init:
     return (void *)-EINVAL;
 }
 
-/**
- * @brief 卸载（umount）文件系统
- *
- * @param p 可忽略
- * @return void
- */
 void fs001_destroy(void *p)
 {
-    /* TODO: 在这里进行卸载 */
     /* 1) forbid reentrance */
     if (fs001_super.driver == NULL)
         return;
@@ -601,12 +585,12 @@ void fs001_destroy(void *p)
     if (fs001_write_inode(fs001_super.root_dentry->inode) != 0)
         perror("fs001_destroy: write inode");
     /* 3) write super block */
-    if (driver_write(fs001_super.driver, &fs001_super.d, FS001_SUPER_OFF, sizeof(struct fs001_super_d)) != 0)
+    if (driver_write(fs001_super.driver, (char *)&fs001_super.d, FS001_SUPER_OFF, sizeof(struct fs001_super_d)) != 0)
         perror("fs001_destroy: write super");
     /* 4) write bitmap */
-    if ((driver_write(fs001_super.driver, &fs001_super.bitmap_inode, FS001_BITMAP_INODE_OFF, sizeof(fs001_super.bitmap_inode))) != 0)
+    if ((driver_write(fs001_super.driver, (char *)fs001_super.bitmap_inode, FS001_BITMAP_INODE_OFF, sizeof(fs001_super.bitmap_inode))) != 0)
         perror("fs001_destroy: write bitmap inode");
-    if ((driver_write(fs001_super.driver, &fs001_super.bitmap_data, FS001_BITMAP_DATA_OFF, sizeof(fs001_super.bitmap_data))) != 0)
+    if ((driver_write(fs001_super.driver, (char *)fs001_super.bitmap_data, FS001_BITMAP_DATA_OFF, sizeof(fs001_super.bitmap_data))) != 0)
         perror("fs001_destroy: write bitmap data");
     /* 5) release driver */
     driver_close(fs001_super.driver);
@@ -615,27 +599,19 @@ void fs001_destroy(void *p)
     return;
 }
 
-/**
- * @brief 创建目录
- *
- * @param path 相对于挂载点的路径
- * @param mode 创建模式（只读？只写？），可忽略
- * @return int 0成功，否则失败
- */
 int fs001_mkdir(const char *path, mode_t mode)
 {
     bool is_find, is_root;
     char *fname;
     struct fs001_dentry *last_dentry = fs001_lookup(path, &is_find, &is_root);
     struct fs001_dentry *dentry;
-    struct fs001_inode *inode;
 
     if (is_find)
     {
         return -EEXIST;
     }
 
-    if (FS001_IS_REG(last_dentry->inode))
+    if (last_dentry->inode->d.type == FS001_FILE)
     {
         return -ENXIO;
     }
@@ -643,7 +619,7 @@ int fs001_mkdir(const char *path, mode_t mode)
     fname = fs001_get_fname(path);
     dentry = fs001_new_dentry(fname, FS001_DIR);
     dentry->parent = last_dentry;
-    inode = fs001_alloc_inode(dentry);
+    fs001_alloc_inode(dentry);
     fs001_append_dentry(last_dentry->inode, dentry);
 
     return 0;
@@ -665,12 +641,12 @@ int fs001_getattr(const char *path, struct stat *fs001_stat)
         return -ENOENT;
     }
 
-    if (FS001_IS_DIR(dentry->inode))
+    if (dentry->inode->d.type == FS001_DIR)
     {
         fs001_stat->st_mode = S_IFDIR | FS001_DEFAULT_PERM;
         fs001_stat->st_size = dentry->inode->d.size;
     }
-    else if (FS001_IS_REG(dentry->inode))
+    else if (dentry->inode->d.type == FS001_FILE)
     {
         fs001_stat->st_mode = S_IFREG | FS001_DEFAULT_PERM;
         fs001_stat->st_size = dentry->inode->d.size;
@@ -746,7 +722,6 @@ int fs001_mknod(const char *path, mode_t mode, dev_t dev)
 
     struct fs001_dentry *last_dentry = fs001_lookup(path, &is_find, &is_root);
     struct fs001_dentry *dentry;
-    struct fs001_inode *inode;
     char *fname;
 
     if (is_find == true)
@@ -769,7 +744,7 @@ int fs001_mknod(const char *path, mode_t mode, dev_t dev)
         dentry = fs001_new_dentry(fname, FS001_FILE);
     }
     dentry->parent = last_dentry;
-    inode = fs001_alloc_inode(dentry);
+    fs001_alloc_inode(dentry);
     fs001_append_dentry(last_dentry->inode, dentry);
 
     return 0;
@@ -882,11 +857,11 @@ int fs001_rename(const char *from, const char *to)
 
     from_inode = from_dentry->inode;
 
-    if (FS001_IS_DIR(from_inode))
+    if (from_inode->d.type == FS001_DIR)
     {
         mode = S_IFDIR;
     }
-    else if (FS001_IS_REG(from_inode))
+    else if (from_inode->d.type == FS001_FILE)
     {
         mode = S_IFREG;
     }
@@ -954,7 +929,7 @@ int fs001_truncate(const char *path, off_t offset)
 
     inode = dentry->inode;
 
-    if (FS001_IS_DIR(inode))
+    if (inode->d.type == FS001_DIR)
     {
         return -EISDIR;
     }
@@ -1007,3 +982,4 @@ int fs001_access(const char *path, int type)
     }
     return is_access_ok ? 0 : -EACCES;
 }
+#pragma endregion

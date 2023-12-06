@@ -31,7 +31,7 @@ struct driver *driver_init(char *device_path)
     if ((driver->buf = malloc(driver->sz_blk)) == NULL)
         goto error_buf;
     /* 4) fetch and verify disk size */
-    if (ddriver_ioctl(driver->fd, IOC_REQ_DEVICE_SIZE, &driver->sz_disk) != 0 || driver->sz_disk <= 0 || driver->sz_disk % driver->sz_blk != 0)
+    if (ddriver_ioctl(driver->fd, IOC_REQ_DEVICE_SIZE, &driver->sz_disk) != 0 || driver->sz_disk <= 0)
         goto error_blk_disk;
 
     return driver;
@@ -51,7 +51,6 @@ error_malloc:
 
 int driver_close(struct driver *driver)
 {
-    // TODO
     if (driver != NULL)
     {
         if (driver->buf != NULL)
@@ -71,14 +70,7 @@ int driver_close(struct driver *driver)
 
 int driver_get_disk_size(struct driver *driver)
 {
-    int sz_disk;
-    if (ddriver_ioctl(driver->fd, IOC_REQ_DEVICE_SIZE, &sz_disk) != 0)
-        goto error_blk_disk;
-
-    return sz_disk;
-
-error_blk_disk:
-    return 0;
+    return driver->sz_disk;
 }
 
 int driver_read(struct driver *driver, char *target, size_t offset, size_t size)
@@ -86,10 +78,12 @@ int driver_read(struct driver *driver, char *target, size_t offset, size_t size)
     size_t offset_aligned = ROUND_DOWN(offset, driver->sz_blk);
     size_t bias = offset - offset_aligned;
 
-    ddriver_seek(driver->fd, offset_aligned, SEEK_SET);
+    if (ddriver_seek(driver->fd, offset_aligned, SEEK_SET) != offset_aligned)
+        goto error_seek;
     if (bias != 0)
     { // unaligned start
-        ddriver_read(driver->fd, driver->buf, driver->sz_blk);
+        if (ddriver_read(driver->fd, driver->buf, driver->sz_blk) != driver->sz_blk)
+            goto error_read;
         int read_size = driver->sz_blk - bias;
         read_size = read_size < size ? read_size : size;
         memcpy(target, driver->buf + bias, read_size);
@@ -98,17 +92,23 @@ int driver_read(struct driver *driver, char *target, size_t offset, size_t size)
     }
     while (size >= driver->sz_blk)
     { // aligned middle
-        ddriver_read(driver->fd, target, driver->sz_blk);
+        if (ddriver_read(driver->fd, target, driver->sz_blk) != driver->sz_blk)
+            goto error_read;
         target += driver->sz_blk;
         size -= driver->sz_blk;
     }
     if (size != 0)
     { // unaligned end
-        ddriver_read(driver->fd, driver->buf, driver->sz_blk);
+        if (ddriver_read(driver->fd, driver->buf, driver->sz_blk) != driver->sz_blk)
+            goto error_read;
         memcpy(target, driver->buf, size);
     }
 
     return 0;
+
+error_read:
+error_seek:
+    return -1;
 }
 
 int driver_write(struct driver *driver, char *source, size_t offset, size_t size)
